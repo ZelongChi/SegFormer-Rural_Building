@@ -1,0 +1,54 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.venv/
+venv/
+
+# ===== 模型权重 / 预训练权重（太大，不进 git）=====
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+!tools/*.pth
+weights/
+work_dirs/segformer_mitb2/
+work_dirs/*/weights/
+
+# ===== HuggingFace 缓存 =====
+hf_cache/
+
+# ===== YOLO 数据集与训练产物 =====
+yolo_data/images/
+yolo_data/labels/
+yolo_data/seg_building/
+yolo_data/seg_building-2/
+yolo11s-seg.pt
+
+# ===== PyInstaller 打包产物与临时文件 =====
+exe_build/
+SegFormerBuildingEXE/
+build/
+dist/
+*.spec
+
+# ===== 推理输出 / 中间结果 =====
+work_dirs/ui/
+work_dirs/ui_yolo/
+work_dirs/result/
+work_dirs/*/job_*/
+*.tif
+!demo/*.tif
+!test_data/*.tif
+
+# ===== IDE / OS =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ===== 日志 =====
+*.log
+work_dirs/train_log*.txt

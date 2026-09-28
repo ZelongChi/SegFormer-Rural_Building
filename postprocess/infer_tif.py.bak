@@ -1,0 +1,115 @@
+﻿# -*- coding: utf-8 -*-
+"""
+大图 TIF 推理（transformers 版 SegFormer）：
+重叠切片 + 加权融合 -> 建筑二值掩码 GeoTIFF
+用法:
+  python postprocess/infer_tif.py --tif D:/Gaofen_Dataset/test_dom.tif
+输出:
+  result_mask.tif (0/1 二值)   result_prob.tif (0~1 概率)
+"""
+import argparse
+import os
+
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ['HF_HOME'] = r'D:\Gaofen_Building_SegFormer\hf_cache'
+
+import numpy as np
+import rasterio
+import torch
+from torch import nn
+from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
+
+CKPT = r'D:\Gaofen_Building_SegFormer\work_dirs\segformer_mitb2\best_mIoU.pth'
+PRETRAINED = 'nvidia/segformer-b2-finetuned-ade-512-512'
+
+
+def load_image_geo(tif_path):
+    with rasterio.open(tif_path) as src:
+        crs = src.crs
+        transform = src.transform
+        h, w = src.height, src.width
+        arr = np.transpose(src.read([1, 2, 3]), (1, 2, 0)).astype(np.uint8)
+    return arr, transform, crs, h, w
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--tif', required=True)
+    ap.add_argument('--out', default=r'D:\Gaofen_Building_SegFormer\work_dirs\result')
+    ap.add_argument('--tile', type=int, default=512)
+    ap.add_argument('--overlap', type=int, default=128)
+    ap.add_argument('--prob_thr', type=float, default=0.45)
+    ap.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+    args = ap.parse_args()
+
+    if not os.path.exists(CKPT):
+        raise SystemExit(f'[错误] 未找到模型权重: {CKPT}\n请先运行 tools/train.py 完成训练。')
+
+    os.makedirs(args.out, exist_ok=True)
+    print('[1/4] 加载模型...')
+    processor = SegformerImageProcessor.from_pretrained(PRETRAINED)
+    model = SegformerForSemanticSegmentation.from_pretrained(
+        PRETRAINED, num_labels=2, ignore_mismatched_sizes=True)
+    model.load_state_dict(torch.load(CKPT, map_location=args.device))
+    model.to(args.device).eval()
+
+    print('[2/4] 读取影像...')
+    img, transform, crs, H, W = load_image_geo(args.tif)
+    print(f'  影像 {W}x{H}, 瓦片 {args.tile}, 重叠 {args.overlap}')
+
+    prob_acc = np.zeros((H, W), np.float32)
+    w_acc = np.zeros((H, W), np.float32)
+    stride = args.tile - args.overlap
+
+    ys = list(range(0, max(H - args.tile, 0) + 1, stride)) or [0]
+    xs = list(range(0, max(W - args.tile, 0) + 1, stride)) or [0]
+    if ys[-1] + args.tile < H:
+        ys.append(H - args.tile)
+    if xs[-1] + args.tile < W:
+        xs.append(W - args.tile)
+
+    print('[3/4] 切片推理...')
+    with torch.no_grad():
+        for i, y0 in enumerate(ys):
+            for j, x0 in enumerate(xs):
+                tile = img[y0:y0 + args.tile, x0:x0 + args.tile]
+                th, tw = tile.shape[:2]
+                inputs = processor(images=tile, return_tensors='pt').to(args.device)
+                out = model(**inputs)
+                logits = nn.functional.interpolate(
+                    out.logits, size=(th, tw), mode='bilinear',
+                    align_corners=False)
+                prob = torch.softmax(logits, dim=1)[0, 1].cpu().numpy()
+
+                # 边缘权重斜坡，消除拼接缝
+                ramp = np.ones_like(prob, np.float32)
+                r = min(16, args.overlap // 2)
+                ramp[:r, :] *= np.linspace(0.2, 1.0, r)[:, None]
+                ramp[-r:, :] *= np.linspace(1.0, 0.2, r)[:, None]
+                ramp[:, :r] *= np.linspace(0.2, 1.0, r)[None, :]
+                ramp[:, -r:] *= np.linspace(1.0, 0.2, r)[None, :]
+
+                prob_acc[y0:y0 + th, x0:x0 + tw] += prob * ramp
+                w_acc[y0:y0 + th, x0:x0 + tw] += ramp
+                print(f'  瓦片 [{i+1}/{len(ys)}][{j+1}/{len(xs)}]', end='\r')
+
+    w_acc[w_acc < 1e-6] = 1.0
+    prob = prob_acc / w_acc
+    mask = (prob >= args.prob_thr).astype(np.uint8)
+
+    print('\n[4/4] 写出 GeoTIFF...')
+    with rasterio.open(os.path.join(args.out, 'result_mask.tif'), 'w',
+                       driver='GTiff', height=H, width=W, count=1,
+                       dtype='uint8', crs=crs, transform=transform) as dst:
+        dst.write(mask, 1)
+    with rasterio.open(os.path.join(args.out, 'result_prob.tif'), 'w',
+                       driver='GTiff', height=H, width=W, count=1,
+                       dtype='float32', crs=crs, transform=transform) as dst:
+        dst.write(prob.astype(np.float32), 1)
+
+    print(f'[完成] 输出: {args.out}\\result_mask.tif 与 result_prob.tif')
+    print('下一步: python postprocess/mask_to_vector.py 提取单栋建筑矢量')
+
+
+if __name__ == '__main__':
+    main()

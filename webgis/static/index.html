@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BuildingInsight WebGIS — 建筑边界识别</title>
+<link href="/vendor/maplibre-gl.css?v=3" rel="stylesheet">
+<script src="/vendor/maplibre-gl.js?v=3"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root { --bg: #0b1120; --panel: #111a2ecc; --line: #1e2a45; --accent: #22d3ee; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; height:100%; font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:#e2e8f0; overflow:hidden; }
+  #map { position:absolute; inset:0; }
+  .glass { background:var(--panel); backdrop-filter:blur(14px); border:1px solid var(--line); }
+  .panel { position:absolute; z-index:10; }
+  .btn { background:linear-gradient(135deg,#06b6d4,#3b82f6); transition:.2s; }
+  .btn:hover { filter:brightness(1.15); transform:translateY(-1px); }
+  .btn:disabled { opacity:.5; pointer-events:none; }
+  .dropzone { border:2px dashed #334155; transition:.2s; }
+  .dropzone.dragover { border-color:var(--accent); background:#22d3ee11; }
+  .row-hover:hover { background:#1e293b; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th,td { padding:7px 10px; text-align:left; border-bottom:1px solid #1e293b; }
+  th { color:#94a3b8; font-weight:600; }
+  .spin { animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .pulse { animation:pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  input[type=range]{ accent-color:#22d3ee; }
+  ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<!-- 顶部导航 -->
+<div class="panel top-0 left-0 right-0 h-14 flex items-center justify-between px-5 glass border-b" style="border-radius:0">
+  <div class="flex items-center gap-3">
+    <div class="w-9 h-9 rounded-lg btn flex items-center justify-center">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 21v-4h6v4"/></svg>
+    </div>
+    <div>
+      <div class="font-bold text-sm tracking-wide">BuildingInsight <span style="color:var(--accent)">WebGIS</span></div>
+      <div class="text-xs text-slate-400">农村建筑边界智能识别 · 实例分割</div>
+    </div>
+  </div>
+  <div class="flex items-center gap-2 text-xs">
+    <span class="w-2 h-2 rounded-full bg-emerald-400 pulse"></span>
+    <span class="text-slate-300">模型在线 · YOLO11-seg</span>
+  </div>
+</div>
+
+<!-- 左侧控制面板 -->
+<div class="panel left-4 top-20 w-72 glass rounded-xl p-4 space-y-4" style="max-height:calc(100vh-180px);overflow-y:auto">
+  <div class="text-sm font-semibold text-slate-200">影像输入</div>
+  <div id="dropzone" class="dropzone rounded-xl p-6 text-center cursor-pointer">
+    <svg class="mx-auto mb-2" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><path d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3"/></svg>
+    <div class="text-xs text-slate-400">拖拽影像到此处<br>或 <span style="color:var(--accent)">点击选择文件</span></div>
+    <div id="fname" class="text-xs mt-2 text-cyan-300"></div>
+  </div>
+  <input type="file" id="file" accept=".tif,.tiff,.png,.jpg,.jpeg" class="hidden">
+
+  <div>
+    <div class="flex justify-between text-xs mb-1">
+      <span class="text-slate-300">置信度阈值</span><span id="confVal" class="text-cyan-300">0.35</span>
+    </div>
+    <input type="range" id="conf" min="0.1" max="0.9" step="0.05" value="0.35" class="w-full">
+  </div>
+
+  <button id="runBtn" class="btn w-full py-2.5 rounded-lg font-semibold text-sm text-white" disabled>
+    开始识别
+  </button>
+
+  <div id="progress" class="hidden">
+    <div class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
+      <div id="bar" class="h-full btn transition-all" style="width:0%"></div>
+    </div>
+    <div id="progressText" class="text-xs text-slate-400 mt-1">推理中...</div>
+  </div>
+
+  <div id="stats" class="hidden space-y-2">
+    <div class="grid grid-cols-2 gap-2">
+      <div class="rounded-lg bg-slate-800/60 p-3 text-center">
+        <div id="statCount" class="text-2xl font-bold text-cyan-300">0</div>
+        <div class="text-xs text-slate-400">识别栋数</div>
+      </div>
+      <div class="rounded-lg bg-slate-800/60 p-3 text-center">
+        <div id="statSize" class="text-lg font-bold text-slate-200">—</div>
+        <div class="text-xs text-slate-400">影像尺寸(px)</div>
+      </div>
+    </div>
+    <button id="dlShp" class="w-full py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs">下载 SHP</button>
+    <button id="dlDxf" class="w-full py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs">下载 DXF（CASS）</button>
+  </div>
+</div>
+
+<!-- 右侧属性表 -->
+<div class="panel right-4 top-20 w-72 glass rounded-xl p-4 hidden" id="propPanel" style="max-height:calc(100vh-180px);overflow-y:auto">
+  <div class="text-sm font-semibold text-slate-200 mb-2">建筑属性表</div>
+  <div style="max-height:400px;overflow-y:auto">
+    <table>
+      <thead><tr><th>#</th><th style="text-align:right">面积(px²)</th><th style="text-align:right">面积(m²)</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 底部状态栏 -->
+<div class="panel bottom-4 left-1/2 -translate-x-1/2 glass rounded-full px-5 py-2 text-xs flex gap-5">
+  <span>像素坐标: <span id="coord" class="text-cyan-300">— , —</span></span>
+  <span id="resInfo" class="text-slate-400"></span>
+</div>
+
+<script>
+if (typeof maplibregl === 'undefined') {
+  document.body.innerHTML = '<div style="padding:40px;color:#f472b6;font-size:18px">地图组件加载失败，请按 Ctrl+F5 强制刷新页面。</div>';
+  throw new Error('maplibregl not loaded');
+}
+const map = new maplibregl.Map({
+  container: 'map',
+  center: [0, 0], zoom: 1,
+  attributionControl: false
+});
+
+let currentFile = null;
+let resultData = null;
+
+const dz = document.getElementById('dropzone');
+const fileInput = document.getElementById('file');
+dz.onclick = () => fileInput.click();
+fileInput.onchange = () => { if (fileInput.files[0]) setFile(fileInput.files[0]); };
+['dragover','dragleave','drop'].forEach(ev => {
+  dz.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation();
+    dz.classList.toggle('dragover', ev === 'dragover');
+    if (ev === 'drop' && e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+  });
+});
+function setFile(f) {
+  currentFile = f;
+  document.getElementById('fname').textContent = f.name;
+  document.getElementById('runBtn').disabled = false;
+}
+document.getElementById('conf').oninput = e => {
+  document.getElementById('confVal').textContent = e.target.value;
+};
+
+map.on('mousemove', e => {
+  const ll = e.lngLat;
+  document.getElementById('coord').textContent =
+    Math.round((ll.lng + 180) / 360 * (window._W || 1000)) + ' , ' +
+    Math.round((85.05112878 - ll.lat) / 170.10225756 * (window._H || 1000));
+});
+
+document.getElementById('runBtn').onclick = async () => {
+  if (!currentFile) return;
+  const btn = document.getElementById('runBtn');
+  const prog = document.getElementById('progress');
+  const bar = document.getElementById('bar');
+  btn.disabled = true;
+  btn.textContent = '识别中...';
+  prog.classList.remove('hidden');
+  bar.style.width = '30%';
+  document.getElementById('progressText').textContent = '上传并推理中(瓦片)...';
+
+  const fd = new FormData();
+  fd.append('file', currentFile);
+  fd.append('conf', document.getElementById('conf').value);
+
+  try {
+    const r = await fetch('/api/infer', { method: 'POST', body: fd });
+    const data = await r.json();
+    resultData = data;
+    window._W = data.width; window._H = data.height;
+    bar.style.width = '100%';
+    document.getElementById('progressText').textContent = '完成 ✓';
+
+    renderResult(data);
+  } catch (err) {
+    document.getElementById('progressText').textContent = '失败: ' + err;
+  }
+  btn.disabled = false;
+  btn.textContent = '开始识别';
+};
+
+function renderResult(data) {
+  // 影像底图
+  if (map.getSource('base')) { map.removeLayer('base'); map.removeSource('base'); }
+  map.addSource('base', {
+    type: 'image', url: data.base_url,
+    coordinates: [[-180, 85.05112878], [180, 85.05112878], [180, -85.05112878], [-180, -85.05112878]]
+  });
+  map.addLayer({ id: 'base', type: 'raster', source: 'base' });
+
+  // 建筑矢量
+  const fc = { type: 'FeatureCollection', features: data.buildings.map(b => ({
+    type: 'Feature', properties: { id: b.id, area: b.area_m2 || b.area_px2 }, geometry: b.geometry
+  }))};
+  if (map.getSource('buildings')) { map.removeLayer('fill'); map.removeLayer('line'); map.removeSource('buildings'); }
+  map.addSource('buildings', { type: 'geojson', data: fc });
+  map.addLayer({ id: 'fill', type: 'fill', source: 'buildings',
+    paint: { 'fill-color': '#22d3ee', 'fill-opacity': 0.25 } });
+  map.addLayer({ id: 'line', type: 'line', source: 'buildings',
+    paint: { 'line-color': '#f472b6', 'line-width': 2 } });
+
+  // 属性表
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = data.buildings.map(b =>
+    `<tr class="row-hover" data-id="${b.id}">
+      <td>${b.id}</td><td style="text-align:right">${b.area_px2}</td>
+      <td style="text-align:right">${b.area_m2 ?? '—'}</td></tr>`).join('');
+  tbody.querySelectorAll('tr').forEach(tr => tr.onclick = () => highlight(+tr.dataset.id));
+
+  document.getElementById('propPanel').classList.remove('hidden');
+  document.getElementById('stats').classList.remove('hidden');
+  document.getElementById('statCount').textContent = data.count;
+  document.getElementById('statSize').textContent = data.width + '×' + data.height;
+  document.getElementById('resInfo').textContent = data.px_m2 > 0 ? '像元 ' + (data.px_m2**0.5).toFixed(2) + ' m/px' : '无投影信息';
+
+  map.fitBounds([[-180, -85.05], [180, 85.05]], { padding: 20 });
+
+  document.getElementById('dlShp').onclick = () => location.href = data.shp_url;
+  document.getElementById('dlDxf').onclick = () => location.href = data.dxf_url;
+}
+
+function highlight(id) {
+  map.setFilter('fill', ['==', ['get', 'id'], id]);
+  setTimeout(() => map.setFilter('fill', null), 1500);
+}
+</script>
+</body>
+</html>

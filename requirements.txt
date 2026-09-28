@@ -1,0 +1,27 @@
+# ============================================================================
+# SegFormer MiT-B2 农村建筑提取 依赖清单（Python 3.10, Windows, RTX2070）
+# 安装: pip install -r requirements.txt
+# 注意: 先手动装 torch (见 README)，再装本清单其余项
+# ============================================================================
+
+# ---------- 深度学习框架（先单独安装，见 README）----------
+# torch==2.0.1+cu118
+# torchvision==0.15.2+cu118
+
+# ---------- MMSegmentation 生态（版本必须匹配）----------
+mmcv==2.0.1
+mmengine==0.10.4
+mmsegmentation==1.2.2
+
+# ---------- 数据与后处理 -----------
+rasterio==1.3.9
+geopandas==0.14.3
+shapely==2.0.3
+pyproj==3.6.1
+ezdxf==1.3.1
+opencv-python==4.9.0.80
+numpy==1.24.4
+scipy==1.11.4
+tqdm==4.66.1
+Pillow==10.2.0
+matplotlib==3.8.2

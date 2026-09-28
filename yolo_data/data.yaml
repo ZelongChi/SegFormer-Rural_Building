@@ -1,0 +1,5 @@
+path: D:\Gaofen_Building_SegFormer\yolo_data
+train: images/train
+val: images/val
+nc: 1
+names: ['building']
